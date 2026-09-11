@@ -77,6 +77,7 @@ class TestAPITokenSecurity:
             ok, msg = await _validate_token()
             assert ok is False
             assert "Invalid access token" in msg
+            assert "Canvas authentication failed" in msg
 
     @pytest.mark.asyncio
     async def test_token_validation_network_error(self):
@@ -88,6 +89,7 @@ class TestAPITokenSecurity:
             ok, msg = await _validate_token()
             assert ok is False
             assert "ConnectionError" in msg
+            assert "Canvas authentication error" in msg
 
     def test_env_file_permissions(self):
         """TC-2.1.4: Verify .env file permissions.

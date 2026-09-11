@@ -1,5 +1,6 @@
 """Tests for HTTP transport: credential middleware, ContextVar flow, and CLI args."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
@@ -120,6 +121,34 @@ class TestCanvasCredentialMiddleware:
         # Context cleared after request
         assert get_request_credentials() is None
         assert is_http_request_active() is False
+
+    @pytest.mark.asyncio
+    async def test_session_cookie_only_pins_url(self, middleware):
+        """Middleware accepts X-Canvas-Cookie without a Bearer token."""
+        captured_creds = {}
+
+        async def capture_app(scope, receive, send):
+            creds = get_request_credentials()
+            if creds:
+                captured_creds["token"] = creds.api_token
+                captured_creds["cookie"] = creds.session_cookie
+                captured_creds["url"] = creds.api_url
+
+        middleware.app = capture_app
+        scope = {
+            "type": "http",
+            "headers": [(b"x-canvas-cookie", b"canvas_session=test-session-cookie")],
+        }
+        with patch(
+            "canvas_mcp.server.get_config",
+            return_value=_FakeConfig("https://canvas.harvard.edu/api/v1"),
+        ):
+            await middleware(scope, AsyncMock(), AsyncMock())
+
+        assert captured_creds["cookie"] == "canvas_session=test-session-cookie"
+        assert captured_creds["token"] == ""
+        assert captured_creds["url"] == "https://canvas.harvard.edu/api/v1"
+        assert get_request_credentials() is None
 
     @pytest.mark.asyncio
     async def test_canvas_url_header_is_ignored(self, middleware):
@@ -370,15 +399,30 @@ class TestClientPerRequestCredentials:
     @pytest.mark.asyncio
     async def test_falls_back_to_global_client(self):
         """When ContextVar is not set, uses global client (stdio mode)."""
-        # No credentials set — stdio mode
+        # No per-request credentials — stdio mode
         assert get_request_credentials() is None
 
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"id": 1}
         mock_response.raise_for_status = MagicMock()
+        mock_config = SimpleNamespace(
+            canvas_api_url="https://canvas.harvard.edu/api/v1",
+            canvas_api_token="test-token",
+            canvas_session_cookie="",
+            chrome_user_data_dir="",
+            chrome_profile_directory="",
+            canvas_auth_mode="token",
+            max_concurrent_requests=5,
+            api_timeout=30,
+            log_api_requests=False,
+            enable_data_anonymization=False,
+            anonymization_debug=False,
+        )
 
-        with patch("canvas_mcp.core.client._get_http_client") as mock_get_client:
+        with patch("canvas_mcp.core.client._get_http_client") as mock_get_client, patch(
+            "canvas_mcp.core.config.get_config", return_value=mock_config
+        ):
             mock_client = AsyncMock()
             mock_client.get = AsyncMock(return_value=mock_response)
             mock_get_client.return_value = mock_client

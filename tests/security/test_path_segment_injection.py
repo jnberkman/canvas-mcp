@@ -88,9 +88,27 @@ class TestClientRefusesDelimiters:
         from the HTTP client can only escape if the guard already let the request
         through, whereas a refused endpoint returns an error dict before that point.
         """
+        from types import SimpleNamespace
+
         from canvas_mcp.core.client import make_canvas_request
 
-        with patch("canvas_mcp.core.client.httpx.AsyncClient") as client:
+        mock_config = SimpleNamespace(
+            canvas_api_url="https://canvas.harvard.edu/api/v1",
+            canvas_api_token="test-token",
+            canvas_session_cookie="",
+            chrome_user_data_dir="",
+            chrome_profile_directory="",
+            canvas_auth_mode="token",
+            max_concurrent_requests=5,
+            api_timeout=30,
+            log_api_requests=False,
+            enable_data_anonymization=False,
+            anonymization_debug=False,
+        )
+
+        with patch("canvas_mcp.core.config.get_config", return_value=mock_config), patch(
+            "canvas_mcp.core.client.httpx.AsyncClient"
+        ) as client:
             client.side_effect = RuntimeError("reached the network layer")
             with pytest.raises(RuntimeError, match="reached the network layer"):
                 await make_canvas_request(

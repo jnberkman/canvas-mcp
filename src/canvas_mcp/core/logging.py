@@ -30,6 +30,21 @@ _PII_KEYS = frozenset({
     "sis_user_id", "value",
 })
 
+# Auth secrets — always redacted, even when LOG_REDACT_PII=false.
+_SECRET_KEYS = frozenset({
+    "cookie",
+    "cookies",
+    "session_cookie",
+    "canvas_session_cookie",
+    "authorization",
+    "api_token",
+    "canvas_api_token",
+    "token",
+    "csrf",
+    "csrf_token",
+    "x_csrf_token",
+})
+
 # ID keys that should be truncated (show only last 4 chars)
 _ID_KEYS = frozenset({
     "course_id", "topic_id", "assignment_id", "entry_id", "submission_id",
@@ -51,12 +66,14 @@ def _sanitize_context(context: dict[str, Any]) -> dict[str, Any]:
     - Keys in _ID_KEYS are truncated to show only last 4 characters
     - All other keys pass through unchanged
     """
-    if not _is_redaction_enabled():
-        return context
-
     sanitized: dict[str, Any] = {}
+    redact_pii = _is_redaction_enabled()
     for key, val in context.items():
-        if key in _PII_KEYS:
+        if key.lower() in _SECRET_KEYS:
+            sanitized[key] = "[REDACTED]"
+        elif not redact_pii:
+            sanitized[key] = val
+        elif key in _PII_KEYS:
             sanitized[key] = "[REDACTED]"
         elif key in _ID_KEYS:
             str_val = str(val)

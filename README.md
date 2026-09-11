@@ -340,10 +340,15 @@ pip install -e .
 cp env.template .env
 
 # Edit with your Canvas credentials
-# Required: CANVAS_API_TOKEN, CANVAS_API_URL
+# This fork (Harvard student): CANVAS_SESSION_COOKIE or CANVAS_CHROME_USER_DATA_DIR
+# Optional fallback: CANVAS_API_TOKEN
+# Defaults: CANVAS_API_URL=https://canvas.harvard.edu/api/v1, CANVAS_ROLE=student
 ```
 
-Get your Canvas API token from: **Canvas → Account → Settings → New Access Token**
+**Harvard Key session (this fork):** see [docs/harvard-session-auth.md](docs/harvard-session-auth.md).
+Do not put cookie values in this README or in commits.
+
+Get a Canvas API token (optional fallback) from: **Canvas → Account → Settings → New Access Token**
 
 > **Some institutions gate token creation.** Where self-service is disabled, the
 > "New Access Token" button is missing or errors out, and tokens are issued through an

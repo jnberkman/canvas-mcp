@@ -10,15 +10,21 @@ Canvas MCP is a Model Context Protocol server that bridges AI assistants with Ca
 
 ## Authentication
 
-All tools require a valid Canvas API token.
+This fork's primary path is a **Harvard Key browser session** for Canvas REST
+`/api/v1` (Cookie header or Chrome persistent profile). A personal
+`CANVAS_API_TOKEN` is optional. See [docs/harvard-session-auth.md](docs/harvard-session-auth.md).
+Never paste cookie or token values into chat or logs.
 
 > **Note:** The public hosted server (`mcp.illinihunt.org`) has been **retired** — a public MCP endpoint without an access gate would expose the code-execution tool. Use local (self-hosted) mode below. The HTTP/streamable transport remains supported for self-hosting behind your own authentication; for a shared institutional deployment, see [deploy/azure/](deploy/azure/).
 
 ### Local (Self-Hosted)
 Configure credentials in the MCP server's `.env` file:
 ```
-CANVAS_API_TOKEN=your_token_here
-CANVAS_API_URL=https://your-institution.instructure.com/api/v1
+CANVAS_API_URL=https://canvas.harvard.edu/api/v1
+CANVAS_ROLE=student
+CANVAS_AUTH_MODE=session
+CANVAS_SESSION_COOKIE=<session-cookie-header>
+# or: CANVAS_CHROME_USER_DATA_DIR=<chrome-user-data-dir>
 ```
 
 Students and educators use the same server but have access to different tools based on Canvas API permissions.
@@ -28,9 +34,9 @@ Reduce tool overhead by setting a role-based profile. Only tools relevant to the
 
 ```
 # In .env:
-CANVAS_ROLE=student    # ~37 tools (student + shared)
+CANVAS_ROLE=student    # ~37 tools (student + shared); default on this fork
 CANVAS_ROLE=educator   # 90 tools (educator + shared)
-CANVAS_ROLE=all        # Default profile; 96 tools by default, 101 with all feature-gated tools enabled
+CANVAS_ROLE=all        # 96 tools by default, 101 with all feature-gated tools enabled
 ```
 
 Or via CLI flag: `canvas-mcp-server --role student` (CLI flag takes precedence over env var).
@@ -42,8 +48,8 @@ Personal academic tracking uses Canvas "self" endpoints. Shared course-content t
 
 | Tool | Purpose |
 |------|---------|
-| `get_my_upcoming_assignments` | Assignments due in next N days |
-| `get_my_todo_items` | Canvas TODO list |
+| `get_my_upcoming_assignments` | Assignments **and planner quizzes** due in next N days |
+| `get_my_todo_items` | Canvas TODO list (includes quiz-typed rows Canvas returns) |
 | `get_my_submission_status` | What's submitted vs missing |
 | `get_my_course_grades` | Current grades across courses |
 | `get_my_peer_reviews_todo` | Pending peer reviews to complete |
@@ -75,8 +81,9 @@ Three things to know before using them:
    or reuse one. Submitting spends an attempt the student may not be able to
    recover.
 
-Quiz-taking is deliberately not offered. Group assignments are refused, because
-submitting would bind classmates who never agreed to it.
+Quiz-taking is deliberately not offered (upstream has no dedicated quiz tools).
+Planner/todo **visibility** of quiz items is preserved. Group assignments are
+refused, because submitting would bind classmates who never agreed to it.
 
 ### Educator Tools
 Course management, grading, and analytics. Requires instructor/TA role.

@@ -16,6 +16,11 @@ _INVALID_FLOAT_ENV_VARS: dict[str, str] = {}
 
 VALID_SANDBOX_MODES = frozenset({"auto", "local", "container"})
 
+# Harvard student fork defaults. Token auth remains an optional fallback.
+DEFAULT_CANVAS_API_URL = "https://canvas.harvard.edu/api/v1"
+DEFAULT_CANVAS_ROLE = "student"
+DEFAULT_CANVAS_AUTH_MODE = "session"
+
 # Canonical names of the student write tools an operator may enable via
 # STUDENT_WRITE_TOOLS. Declared here rather than in the tools package so config
 # stays free of imports from it. Quiz-taking is deliberately absent: it is an
@@ -144,9 +149,9 @@ def _bool_env(name: str, default: bool) -> bool:
 def validate_canvas_url_scheme() -> bool:
     """Reject a cleartext Canvas origin. Returns False when startup must abort.
 
-    Every Canvas request carries the token in an Authorization header, so an
-    http:// origin puts a credential for student records on the wire for anyone
-    on the path. A warning is not proportionate to that.
+    Every Canvas request carries a session cookie or token, so an http://
+    origin puts a credential for student records on the wire for anyone on the
+    path. A warning is not proportionate to that.
 
     Called from BOTH startup paths. validate_config() runs only in stdio mode,
     and HTTP mode is where this matters most: the Canvas URL is server-pinned,
@@ -173,10 +178,10 @@ def validate_canvas_url_scheme() -> bool:
         return True
 
     log_error(
-        "CANVAS_API_URL must use 'https://'. The Canvas API token is sent "
-        "on every request, so a cleartext URL exposes it on the network. "
-        "For local development against a loopback address only, set "
-        "CANVAS_ALLOW_INSECURE_HTTP=true.",
+        "CANVAS_API_URL must use 'https://'. The Canvas session cookie or "
+        "API token is sent on every request, so a cleartext URL exposes it "
+        "on the network. For local development against a loopback address "
+        "only, set CANVAS_ALLOW_INSECURE_HTTP=true.",
     )
     return False
 
@@ -235,12 +240,24 @@ class Config:
     """Configuration class for Canvas MCP server."""
 
     def __init__(self) -> None:
-        # Required configuration
+        # Optional token fallback. Harvard student default is session auth.
         self.canvas_api_token = os.getenv("CANVAS_API_TOKEN", "")
+        self.canvas_session_cookie = os.getenv("CANVAS_SESSION_COOKIE", "")
+        self.chrome_user_data_dir = os.getenv("CANVAS_CHROME_USER_DATA_DIR", "").strip()
+        self.chrome_profile_directory = os.getenv(
+            "CANVAS_CHROME_PROFILE_DIRECTORY", ""
+        ).strip()
+        self.canvas_auth_mode = os.getenv(
+            "CANVAS_AUTH_MODE", DEFAULT_CANVAS_AUTH_MODE
+        ).strip().lower()
         # Keep the configured (pre-normalization) value so validate_config()
         # can report the normalization delta from the same read that produced
-        # canvas_api_url. Whitespace-trimmed, matching the normalizer's input.
-        self.canvas_api_url_configured = os.getenv("CANVAS_API_URL", "").strip()
+        # canvas_api_url. Unset uses the Harvard default; an explicit empty
+        # value stays empty so validate_config() can flag it.
+        configured_url = os.getenv("CANVAS_API_URL")
+        self.canvas_api_url_configured = (
+            DEFAULT_CANVAS_API_URL if configured_url is None else configured_url.strip()
+        )
         self.canvas_api_url = _normalize_canvas_url(self.canvas_api_url_configured)
 
         # Optional configuration with defaults
@@ -345,8 +362,8 @@ class Config:
         self.institution_name = os.getenv("INSTITUTION_NAME", "")
         self.timezone = os.getenv("TIMEZONE", "UTC")
 
-        # Role-based tool filtering
-        self.canvas_role = os.getenv("CANVAS_ROLE", "all").lower()
+        # Role-based tool filtering (Harvard student default)
+        self.canvas_role = os.getenv("CANVAS_ROLE", DEFAULT_CANVAS_ROLE).lower()
 
         # --- Student write tools (#170) ---
         # Campus-wide operator ceiling. Empty (the default) means NO student write
@@ -402,6 +419,7 @@ def reset_config() -> None:
     at runtime must also ``await cleanup_http_client()`` so the next request
     rebuilds the client with the new credentials. (Tests mock the request layer,
     and HTTP-transport mode uses per-request clients, so neither is affected.)
+    Rotating ``CANVAS_SESSION_COOKIE`` has the same rebuild requirement.
     """
     global _config
     _config = None
@@ -427,10 +445,42 @@ def validate_config() -> bool:
         "FIREWALL_HINT": "firewall hints are documentation-only",
     }
 
-    if not config.canvas_api_token:
-        log_error("CANVAS_API_TOKEN environment variable is required")
-        log_error("Please set CANVAS_API_TOKEN in your .env file")
+    from .session_auth import (
+        VALID_AUTH_MODES,
+        describe_auth,
+        resolve_auth_from_config,
+    )
+
+    if config.canvas_auth_mode not in VALID_AUTH_MODES:
+        log_warning(
+            "CANVAS_AUTH_MODE should be one of session, token, auto; "
+            f"defaulting to '{DEFAULT_CANVAS_AUTH_MODE}' "
+            f"(got '{config.canvas_auth_mode}')"
+        )
+        config.canvas_auth_mode = DEFAULT_CANVAS_AUTH_MODE
+
+    material = resolve_auth_from_config(config)
+    if material.kind == "none":
+        if config.canvas_auth_mode == "token":
+            log_error("CANVAS_API_TOKEN environment variable is required")
+            log_error("Please set CANVAS_API_TOKEN in your .env file")
+        else:
+            log_error(
+                "Canvas session auth is required: set CANVAS_SESSION_COOKIE "
+                "or CANVAS_CHROME_USER_DATA_DIR"
+            )
+            log_error(
+                "CANVAS_API_TOKEN remains an optional fallback when no "
+                "browser session is configured"
+            )
         return False
+    if material.kind == "token" and config.canvas_auth_mode != "token":
+        log_info(
+            "Using optional CANVAS_API_TOKEN fallback; session cookie or "
+            "Chrome profile is the primary Harvard path"
+        )
+    else:
+        log_info(f"Canvas auth: {describe_auth(material)}")
 
     if not config.canvas_api_url:
         log_error("CANVAS_API_URL environment variable is required")

@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from canvas_mcp.core.logging import _sanitize_context, sanitize_url
+from canvas_mcp.core.logging import _SECRET_KEYS, _sanitize_context, sanitize_url
 
 
 class TestPIISanitization:
@@ -70,8 +70,24 @@ class TestPIISanitization:
 
         assert result == context
 
+    def test_secret_keys_always_redacted(self):
+        """Cookie/token context keys stay redacted even if PII redaction is off."""
+        context = {
+            "cookie": "canvas_session=test-session-cookie",
+            "session_cookie": "canvas_session=test-session-cookie",
+            "api_token": "test-token-fallback",
+            "authorization": "Bearer test-token-fallback",
+        }
+        assert "cookie" in _SECRET_KEYS
+        with patch.dict(os.environ, {"LOG_REDACT_PII": "false"}):
+            result = _sanitize_context(context)
+        for key in context:
+            assert result[key] == "[REDACTED]", f"{key} should be redacted"
+            assert "test-session-cookie" not in str(result)
+            assert "test-token-fallback" not in str(result)
+
     def test_redaction_disabled(self):
-        """When LOG_REDACT_PII=false, all values pass through unchanged."""
+        """When LOG_REDACT_PII=false, non-secret values pass through unchanged."""
         context = {
             "user_id": 12345,
             "email": "student@university.edu",

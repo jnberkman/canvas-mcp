@@ -12,13 +12,21 @@ if [ -f "$ENV_FILE" ]; then
     echo "Loading environment variables from .env file: $ENV_FILE" >&2
     export $(cat "$ENV_FILE" | grep -v '^#' | xargs)
 else
-    echo "Error: .env file not found at $ENV_FILE. Please create one with CANVAS_API_TOKEN and CANVAS_API_URL" >&2
+    echo "Error: .env file not found at $ENV_FILE. Copy env.template and set CANVAS_SESSION_COOKIE or CANVAS_CHROME_USER_DATA_DIR (see docs/harvard-session-auth.md)." >&2
     exit 1
 fi
 
-# Verify required environment variables are set
-if [ -z "$CANVAS_API_TOKEN" ] || [ -z "$CANVAS_API_URL" ]; then
-    echo "Error: CANVAS_API_TOKEN and CANVAS_API_URL must be set in .env file" >&2
+# Harvard student defaults when unset
+if [ -z "$CANVAS_API_URL" ]; then
+    export CANVAS_API_URL="https://canvas.harvard.edu/api/v1"
+fi
+if [ -z "$CANVAS_ROLE" ]; then
+    export CANVAS_ROLE="student"
+fi
+
+# Session auth is primary; token is optional fallback. Never echo secret values.
+if [ -z "$CANVAS_SESSION_COOKIE" ] && [ -z "$CANVAS_CHROME_USER_DATA_DIR" ] && [ -z "$CANVAS_API_TOKEN" ]; then
+    echo "Error: set CANVAS_SESSION_COOKIE or CANVAS_CHROME_USER_DATA_DIR (CANVAS_API_TOKEN is optional)" >&2
     exit 1
 fi
 

@@ -135,7 +135,7 @@ class TestResolveCanvasCredentials:
         """HTTP request active but no per-request token → never use env token."""
         with patch("canvas_mcp.tools.code_execution.get_request_credentials", return_value=None), \
              patch("canvas_mcp.tools.code_execution.is_http_request_active", return_value=True):
-            with pytest.raises(PermissionError, match="Canvas token required"):
+            with pytest.raises(PermissionError, match="session cookie or token"):
                 _resolve_canvas_credentials(self._config())
 
     def test_stdio_mode_falls_back_to_env(self):
