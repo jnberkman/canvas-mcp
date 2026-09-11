@@ -63,7 +63,9 @@ def _resolve_canvas_credentials(config: Any) -> tuple[str, str]:
     if req_creds:
         return req_creds.api_url, req_creds.api_token
     if is_http_request_active():
-        raise PermissionError("Canvas token required for HTTP code execution")
+        raise PermissionError(
+            "Canvas session cookie or token required for HTTP code execution"
+        )
     return config.canvas_api_url, config.canvas_api_token
 
 
@@ -78,10 +80,18 @@ def _build_safe_env(config: Any) -> dict[str, str]:
         val = os.environ.get(key)
         if val is not None:
             env[key] = val
-    # Explicitly add Canvas credentials (per-request token in HTTP mode)
+    # Explicitly add Canvas credentials (per-request in HTTP mode)
     canvas_api_url, canvas_api_token = _resolve_canvas_credentials(config)
     env["CANVAS_API_URL"] = canvas_api_url
     env["CANVAS_API_TOKEN"] = canvas_api_token
+    req_creds = get_request_credentials()
+    session_cookie = ""
+    if req_creds and req_creds.session_cookie:
+        session_cookie = req_creds.session_cookie
+    elif not is_http_request_active():
+        session_cookie = getattr(config, "canvas_session_cookie", "") or ""
+    if session_cookie:
+        env["CANVAS_SESSION_COOKIE"] = session_cookie
     return env
 
 

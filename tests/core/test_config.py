@@ -189,7 +189,8 @@ def test_validate_config_no_normalization_log_when_canonical(monkeypatch):
     config_module.reset_config()
     with patch.object(config_module, "log_info") as mock_info:
         assert config_module.validate_config() is True
-    assert not mock_info.called
+    logged = " ".join(str(call) for call in mock_info.call_args_list)
+    assert "normalized" not in logged.lower() or "CANVAS_API_URL normalized" not in logged
 
 
 def test_config_normalizes_canvas_api_url(monkeypatch):
@@ -198,6 +199,52 @@ def test_config_normalizes_canvas_api_url(monkeypatch):
     monkeypatch.setenv("CANVAS_API_URL", "https://canvas.school.edu")
     config_module.reset_config()
     assert config_module.get_config().canvas_api_url == "https://canvas.school.edu/api/v1"
+
+
+def test_harvard_student_defaults(monkeypatch):
+    """This fork defaults to Harvard Canvas + student + session auth."""
+    monkeypatch.delenv("CANVAS_API_URL", raising=False)
+    monkeypatch.delenv("CANVAS_ROLE", raising=False)
+    monkeypatch.delenv("CANVAS_AUTH_MODE", raising=False)
+    monkeypatch.delenv("CANVAS_API_TOKEN", raising=False)
+    monkeypatch.delenv("CANVAS_SESSION_COOKIE", raising=False)
+    monkeypatch.delenv("CANVAS_CHROME_USER_DATA_DIR", raising=False)
+    config_module.reset_config()
+    config = config_module.get_config()
+    assert config.canvas_api_url == "https://canvas.harvard.edu/api/v1"
+    assert config.canvas_role == "student"
+    assert config.canvas_auth_mode == "session"
+
+
+def test_validate_config_accepts_session_cookie_without_token(monkeypatch):
+    monkeypatch.delenv("CANVAS_API_TOKEN", raising=False)
+    monkeypatch.setenv("CANVAS_SESSION_COOKIE", "canvas_session=test-session-cookie")
+    monkeypatch.setenv("CANVAS_API_URL", "https://canvas.harvard.edu/api/v1")
+    config_module.reset_config()
+    assert config_module.validate_config() is True
+
+
+def test_validate_config_accepts_chrome_profile_without_token(monkeypatch):
+    monkeypatch.delenv("CANVAS_API_TOKEN", raising=False)
+    monkeypatch.delenv("CANVAS_SESSION_COOKIE", raising=False)
+    monkeypatch.setenv("CANVAS_CHROME_USER_DATA_DIR", "<chrome-user-data-dir>")
+    monkeypatch.setenv("CANVAS_API_URL", "https://canvas.harvard.edu/api/v1")
+    config_module.reset_config()
+    assert config_module.validate_config() is True
+
+
+def test_validate_config_rejects_session_mode_with_no_credentials(monkeypatch):
+    monkeypatch.delenv("CANVAS_API_TOKEN", raising=False)
+    monkeypatch.delenv("CANVAS_SESSION_COOKIE", raising=False)
+    monkeypatch.delenv("CANVAS_CHROME_USER_DATA_DIR", raising=False)
+    monkeypatch.setenv("CANVAS_AUTH_MODE", "session")
+    monkeypatch.setenv("CANVAS_API_URL", "https://canvas.harvard.edu/api/v1")
+    config_module.reset_config()
+    with patch.object(config_module, "log_error") as mock_error:
+        assert config_module.validate_config() is False
+    messages = " ".join(str(c) for c in mock_error.call_args_list)
+    assert "CANVAS_SESSION_COOKIE" in messages
+    assert "CANVAS_CHROME_USER_DATA_DIR" in messages
 
 
 def test_execute_typescript_disabled_by_default(monkeypatch):

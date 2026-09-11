@@ -1,6 +1,7 @@
 """HTTP client and Canvas API utilities."""
 
 import asyncio
+import json
 import re
 import weakref
 from collections.abc import AsyncIterator
@@ -13,6 +14,15 @@ import httpx
 from .anonymization import anonymize_response_data, scrub_identity
 from .credentials import get_request_credentials, is_http_request_active
 from .logging import log_debug, log_error, log_warning, sanitize_url
+from .session_auth import (
+    CanvasAuthMaterial,
+    build_canvas_headers,
+    fetch_via_chrome_profile,
+    redact_secrets,
+    resolve_auth_from_config,
+    resolve_auth_from_request,
+    session_is_unauthenticated,
+)
 
 # Rate limit retry configuration
 MAX_RETRIES = 3
@@ -24,14 +34,43 @@ API_ROOT_REST: Final = "rest"
 API_ROOT_QUIZ: Final = "quiz"
 
 
-def _canvas_auth_headers(api_token: str) -> dict[str, str]:
-    """Build the standard Canvas auth + User-Agent headers for a token."""
-    from .. import __version__
+def _canvas_auth_headers(api_token: str, session_cookie: str = "") -> dict[str, str]:
+    """Build Canvas auth + User-Agent headers.
 
-    return {
-        "Authorization": f"Bearer {api_token}",
-        "User-Agent": f"canvas-mcp/{__version__} (https://github.com/vishalsachdev/canvas-mcp)",
-    }
+    A session cookie is preferred over a Bearer token (Harvard Key path).
+    """
+    if session_cookie:
+        material = CanvasAuthMaterial(
+            kind="session_cookie", session_cookie=session_cookie
+        )
+    else:
+        material = CanvasAuthMaterial(kind="token", api_token=api_token)
+    return build_canvas_headers(material)
+
+
+class _BrowserResponse:
+    """Minimal httpx-like response from a same-origin Chrome fetch."""
+
+    def __init__(self, status_code: int, text: str) -> None:
+        self.status_code = status_code
+        self.text = text
+        self.headers: dict[str, str] = {}
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            request = httpx.Request("GET", "https://canvas.invalid/")
+            response = httpx.Response(
+                self.status_code, text=self.text, request=request
+            )
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=request,
+                response=response,
+            )
+
+    def json(self) -> Any:
+        return json.loads(self.text)
+
 
 def _resolve_canvas_api_root(base_api_url: str, api_root: Literal["rest", "quiz"]) -> str:
     """Resolve a configured ``…/api/v<N>`` base URL to a selected Canvas API root.
@@ -350,7 +389,7 @@ def _get_http_client() -> httpx.AsyncClient:
         from .config import get_config
         config = get_config()
         http_client = httpx.AsyncClient(
-            headers=_canvas_auth_headers(config.canvas_api_token),
+            headers=build_canvas_headers(resolve_auth_from_config(config)),
             timeout=config.api_timeout
         )
         _http_client_loop_ref = weakref.ref(current_loop) if current_loop is not None else None
@@ -371,25 +410,31 @@ async def canvas_authenticated_client() -> AsyncIterator[httpx.AsyncClient]:
 
     Resolution, fail-closed:
     - Per-request credentials present (HTTP mode) -> a fresh client with the
-      caller's token.
+      caller's session cookie or token.
     - No per-request credentials but an HTTP request is active -> raise
-      PermissionError (never fall back to the server's own token).
-    - Otherwise (stdio mode) -> the shared global client (env-based token).
+      PermissionError (never fall back to the server's own credentials).
+    - Otherwise (stdio mode) -> the shared global client (env-based session
+      or optional token).
     """
     from .config import get_config
 
     req_creds = get_request_credentials()
     if req_creds:
         config = get_config()
+        material = resolve_auth_from_request(
+            req_creds.api_token, req_creds.session_cookie
+        )
         async with httpx.AsyncClient(
-            headers=_canvas_auth_headers(req_creds.api_token),
+            headers=build_canvas_headers(material),
             timeout=config.api_timeout,
         ) as client:
             yield client
         return
 
     if is_http_request_active():
-        raise PermissionError("Canvas token required for HTTP request")
+        raise PermissionError(
+            "Canvas session cookie or token required for HTTP request"
+        )
 
     yield _get_http_client()
 
@@ -455,10 +500,22 @@ async def make_canvas_request(
     if api_root not in (API_ROOT_REST, API_ROOT_QUIZ):
         return {"error": f"Unsupported api_root: {api_root}"}
 
+    use_browser = False
+    client: httpx.AsyncClient | None = None
+    browser_material: CanvasAuthMaterial | None = None
+
     if req_creds:
-        # Per-request client with user's credentials (HTTP mode)
+        material = resolve_auth_from_request(
+            req_creds.api_token, req_creds.session_cookie
+        )
+        if material.kind == "none":
+            log_warning(
+                "Blocked Canvas API request without per-request Canvas credentials",
+                endpoint=sanitize_url(endpoint),
+            )
+            return {"error": "Canvas session cookie or token required for HTTP request"}
         client = httpx.AsyncClient(
-            headers=_canvas_auth_headers(req_creds.api_token),
+            headers=build_canvas_headers(material),
             timeout=config.api_timeout,
         )
         try:
@@ -469,22 +526,28 @@ async def make_canvas_request(
         url = f"{base_url}{endpoint}"
         _close_client = True
     elif is_http_request_active():
-        # HTTP request without a per-request token: fail closed. Never fall
-        # back to the server's own credentials (would mis-attribute actions).
+        # HTTP request without per-request credentials: fail closed. Never
+        # fall back to the server's own session or token.
         log_warning(
-            "Blocked Canvas API request without per-request Canvas token",
+            "Blocked Canvas API request without per-request Canvas credentials",
             endpoint=sanitize_url(endpoint),
         )
-        return {"error": "Canvas token required for HTTP request"}
+        return {"error": "Canvas session cookie or token required for HTTP request"}
     else:
-        # Global client (stdio mode)
-        client = _get_http_client()
+        material = resolve_auth_from_config(config)
+        if material.kind == "none":
+            return {"error": "Canvas authentication is not configured"}
         try:
             base_url = _resolve_canvas_api_root(config.canvas_api_url.rstrip('/'), api_root)
         except ValueError as exc:
             return {"error": str(exc)}
         url = f"{base_url}{endpoint}"
         _close_client = False
+        if material.kind == "chrome_profile":
+            use_browser = True
+            browser_material = material
+        else:
+            client = _get_http_client()
 
     # Gate outbound calls with concurrency semaphore (uses MAX_CONCURRENT_REQUESTS)
     semaphore = _get_request_semaphore()
@@ -498,9 +561,33 @@ async def make_canvas_request(
                         retry_info = f" (retry {attempt}/{MAX_RETRIES})" if attempt > 0 else ""
                         log_debug(f"Making {method.upper()} request to {sanitize_url(url)}{retry_info}")
 
-                    if method.lower() == "get":
+                    if use_browser:
+                        if files:
+                            return {"error": "File uploads require CANVAS_SESSION_COOKIE, not a Chrome profile"}
+                        assert browser_material is not None
+                        json_body = None
+                        form_body = None
+                        if method.lower() in ("post", "put"):
+                            if use_form_data:
+                                form_body = data
+                            else:
+                                json_body = data
+                        status, body = await fetch_via_chrome_profile(
+                            method,
+                            url,
+                            user_data_dir=browser_material.chrome_user_data_dir,
+                            profile_directory=browser_material.chrome_profile_directory,
+                            params=params,
+                            json_body=json_body,
+                            form_body=form_body,
+                            timeout_ms=max(config.api_timeout, 1) * 1000,
+                        )
+                        response = _BrowserResponse(status, body)
+                    elif method.lower() == "get":
+                        assert client is not None
                         response = await client.get(url, params=params)
                     elif method.lower() == "post":
+                        assert client is not None
                         if files:
                             # File uploads always pass dict form fields, never
                             # the list-of-tuples encoding.
@@ -524,6 +611,7 @@ async def make_canvas_request(
                         else:
                             response = await client.post(url, json=data)
                     elif method.lower() == "put":
+                        assert client is not None
                         if use_form_data:
                             # Handle list of tuples separately to work around httpx async bug
                             if isinstance(data, list):
@@ -538,12 +626,26 @@ async def make_canvas_request(
                         else:
                             response = await client.put(url, json=data)
                     elif method.lower() == "delete":
+                        assert client is not None
                         response = await client.delete(url, params=params)
                     else:
                         return {"error": f"Unsupported method: {method}"}
 
                     response.raise_for_status()
-                    result = response.json()
+                    try:
+                        result = response.json()
+                    except (ValueError, json.JSONDecodeError):
+                        return {
+                            "error": (
+                                "Canvas session request did not return JSON "
+                                "(session may require Harvard Key sign-in)"
+                            )
+                        }
+
+                    if session_is_unauthenticated(result):
+                        return {
+                            "error": "Canvas session is not authenticated (login_required)"
+                        }
 
                     # Apply anonymization if enabled and this endpoint contains student data
                     # Skip if explicitly requested (e.g., from paginated fetcher that will anonymize the full result)
@@ -580,10 +682,13 @@ async def make_canvas_request(
                     error_message = f"HTTP error: {e.response.status_code}"
                     try:
                         error_details = e.response.json()
-                        error_message += f", Details: {error_details}"
+                        error_message += f", Details: {redact_secrets(str(error_details))}"
                     except ValueError:
-                        error_details = e.response.text
-                        error_message += f", Text: {error_details}"
+                        error_details = redact_secrets(e.response.text)
+                        if "<html" in error_details.lower():
+                            error_message += ", Text: [HTML login or error page omitted]"
+                        else:
+                            error_message += f", Text: {error_details}"
 
                     log_error(f"API error on {sanitize_url(endpoint)}", status_code=e.response.status_code)
 
@@ -598,12 +703,12 @@ async def make_canvas_request(
                     # Audit: log request exception (type only — message may contain PII)
                     log_data_access(method, endpoint, "error", type(e).__name__)
 
-                    return {"error": f"Request failed: {str(e)}"}
+                    return {"error": f"Request failed: {redact_secrets(str(e))}"}
 
             # Should never reach here, but just in case
             return {"error": "Max retries exceeded"}
         finally:
-            if _close_client:
+            if _close_client and client is not None:
                 await client.aclose()
 
 

@@ -122,6 +122,34 @@ class TestCanvasCredentialMiddleware:
         assert is_http_request_active() is False
 
     @pytest.mark.asyncio
+    async def test_session_cookie_only_pins_url(self, middleware):
+        """Middleware accepts X-Canvas-Cookie without a Bearer token."""
+        captured_creds = {}
+
+        async def capture_app(scope, receive, send):
+            creds = get_request_credentials()
+            if creds:
+                captured_creds["token"] = creds.api_token
+                captured_creds["cookie"] = creds.session_cookie
+                captured_creds["url"] = creds.api_url
+
+        middleware.app = capture_app
+        scope = {
+            "type": "http",
+            "headers": [(b"x-canvas-cookie", b"canvas_session=test-session-cookie")],
+        }
+        with patch(
+            "canvas_mcp.server.get_config",
+            return_value=_FakeConfig("https://canvas.harvard.edu/api/v1"),
+        ):
+            await middleware(scope, AsyncMock(), AsyncMock())
+
+        assert captured_creds["cookie"] == "canvas_session=test-session-cookie"
+        assert captured_creds["token"] == ""
+        assert captured_creds["url"] == "https://canvas.harvard.edu/api/v1"
+        assert get_request_credentials() is None
+
+    @pytest.mark.asyncio
     async def test_canvas_url_header_is_ignored(self, middleware):
         """A client-supplied X-Canvas-URL is ignored; the pinned URL is always used."""
         captured = {}

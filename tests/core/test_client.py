@@ -21,6 +21,13 @@ class TestCanvasAuthHeaders:
         headers = _canvas_auth_headers("some-token")
         assert headers["Authorization"] == "Bearer some-token"
 
+    def test_session_cookie_replaces_bearer(self):
+        headers = _canvas_auth_headers(
+            "some-token", session_cookie="canvas_session=test-session-cookie"
+        )
+        assert headers["Cookie"] == "canvas_session=test-session-cookie"
+        assert "Authorization" not in headers
+
     def test_user_agent_identifies_project(self):
         """UA should be self-identifying per Instructure's guidance (contact URL)."""
         headers = _canvas_auth_headers("t")

@@ -264,16 +264,17 @@ def _schedule_notify(config: Any, store: Any, requester: Any) -> None:
 
 
 class CanvasCredentialMiddleware:
-    """ASGI middleware that extracts the caller's Canvas token from headers.
+    """ASGI middleware that extracts the caller's Canvas credentials from headers.
 
-    For each incoming HTTP request, reads X-Canvas-Token and combines it with
-    the server-pinned CANVAS_API_URL so make_canvas_request uses the caller's
-    own Canvas token instead of any server .env token.
+    For each incoming HTTP request, reads X-Canvas-Cookie (preferred) or
+    X-Canvas-Token and combines it with the server-pinned CANVAS_API_URL so
+    make_canvas_request uses the caller's own Canvas session or token.
 
     Fail-closed semantics:
     - When MCP_ACCESS_KEYS is configured, a missing/invalid X-MCP-Access-Key
       returns HTTP 401 before anything else (the v1 multi-user gate).
-    - A missing/blank X-Canvas-Token returns HTTP 401 before the app runs.
+    - A missing/blank X-Canvas-Cookie and X-Canvas-Token returns HTTP 401
+      before the app runs.
     - X-Canvas-URL is ignored (logged); the Canvas API URL is never
       client-controlled, which removes the SSRF surface entirely.
     - The "HTTP request active" marker is set so downstream code refuses to
@@ -390,12 +391,17 @@ class CanvasCredentialMiddleware:
                         return
 
             token = headers.get(b"x-canvas-token", b"").decode("utf-8", errors="ignore").strip()
+            session_cookie = headers.get(b"x-canvas-cookie", b"").decode(
+                "utf-8", errors="ignore"
+            ).strip()
 
             if b"x-canvas-url" in headers:
                 log_warning("Ignoring X-Canvas-URL header; Canvas API URL is server-pinned")
 
-            if not token:
-                await _send_json_error(send, 401, "Missing X-Canvas-Token header")
+            if not session_cookie and not token:
+                await _send_json_error(
+                    send, 401, "Missing X-Canvas-Cookie or X-Canvas-Token header"
+                )
                 return
 
             canvas_url = config.canvas_api_url.strip()
@@ -405,7 +411,11 @@ class CanvasCredentialMiddleware:
                 return
 
             set_request_credentials(
-                RequestCredentials(api_token=token, api_url=canvas_url)
+                RequestCredentials(
+                    api_token=token,
+                    api_url=canvas_url,
+                    session_cookie=session_cookie,
+                )
             )
             await self.app(scope, receive, send)
         finally:
@@ -477,22 +487,30 @@ def register_all_tools(mcp: FastMCP, role: str = "all") -> None:
 
 
 async def _validate_token() -> tuple[bool, str]:
-    """Validate the Canvas API token by calling /users/self.
+    """Validate Canvas session or token by calling /users/self.
 
     Returns:
         Tuple of (success, message). On success the message contains the
         authenticated user name; on failure it describes the error.
+        Secret values are never included.
     """
     from .core.client import make_canvas_request
+    from .core.session_auth import redact_secrets
 
     try:
         response = await make_canvas_request("get", "/users/self")
         if isinstance(response, dict) and "error" in response:
-            return (False, f"Token validation failed: {response['error']}")
+            return (
+                False,
+                f"Canvas authentication failed: {redact_secrets(str(response['error']))}",
+            )
         user_name = response.get("name", "Unknown") if isinstance(response, dict) else "Unknown"
         return (True, f"Authenticated as: {user_name}")
     except Exception as e:
-        return (False, f"Token validation error: {type(e).__name__}: {e}")
+        return (
+            False,
+            f"Canvas authentication error: {type(e).__name__}: {redact_secrets(str(e))}",
+        )
 
 
 def test_connection() -> bool:
@@ -580,7 +598,7 @@ def main() -> None:
         "--role",
         choices=["student", "educator", "all"],
         default=None,
-        help="Tool profile: student (~37 tools), educator (~88 tools), all (default: all)"
+        help="Tool profile: student (~37 tools), educator (~88 tools), all (default: CANVAS_ROLE, student)"
     )
     parser.add_argument(
         "--list-grants",
@@ -623,6 +641,12 @@ def main() -> None:
             log_error(
                 "CANVAS_API_TOKEN must NOT be set in HTTP mode — clients supply their "
                 "own token via the X-Canvas-Token header. Unset it and restart."
+            )
+            sys.exit(1)
+        if config.canvas_session_cookie:
+            log_error(
+                "CANVAS_SESSION_COOKIE must NOT be set in HTTP mode — clients supply "
+                "their own session via the X-Canvas-Cookie header. Unset it and restart."
             )
             sys.exit(1)
         if config.entra_auth_enabled and not config.mcp_allow_unauthenticated:
@@ -680,6 +704,13 @@ def main() -> None:
             print(f"  Port: {args.port}", file=sys.stderr)
         else:
             print(f"  Canvas API URL: {config.canvas_api_url}", file=sys.stderr)
+            from .core.session_auth import describe_auth, resolve_auth_from_config
+
+            print(f"  Auth mode: {config.canvas_auth_mode}", file=sys.stderr)
+            print(
+                f"  Auth: {describe_auth(resolve_auth_from_config(config))}",
+                file=sys.stderr,
+            )
         print(f"  Debug Mode: {config.debug}", file=sys.stderr)
         print(f"  API Timeout: {config.api_timeout}s", file=sys.stderr)
         print(f"  Cache TTL: {config.cache_ttl}s", file=sys.stderr)
@@ -731,9 +762,15 @@ def main() -> None:
         log_info(
             f"Starting Canvas MCP server in HTTP mode on {args.host}:{args.port}"
         )
-        log_info("Credentials: per-request via X-Canvas-Token header; Canvas API URL is server-pinned")
+        log_info(
+            "Credentials: per-request via X-Canvas-Cookie or X-Canvas-Token; "
+            "Canvas API URL is server-pinned"
+        )
     else:
+        from .core.session_auth import describe_auth, resolve_auth_from_config
+
         log_info(f"Starting Canvas MCP server with API URL: {config.canvas_api_url}")
+        log_info(f"Canvas auth: {describe_auth(resolve_auth_from_config(config))}")
 
     if config.institution_name:
         log_info(f"Institution: {config.institution_name}")
@@ -746,13 +783,14 @@ def main() -> None:
                 log_info(f"✓ {message}")
             else:
                 log_warning(
-                    f"Token validation failed: {message}. "
-                    "Check your CANVAS_API_TOKEN. Server will start anyway."
+                    f"{message}. Check CANVAS_SESSION_COOKIE or "
+                    "CANVAS_CHROME_USER_DATA_DIR (CANVAS_API_TOKEN is optional). "
+                    "Server will start anyway."
                 )
         except Exception:
             log_warning(
-                "Could not validate token on startup (network may be unavailable). "
-                "Server will start anyway."
+                "Could not validate Canvas session on startup "
+                "(network may be unavailable). Server will start anyway."
             )
         finally:
             # asyncio.run() creates and immediately closes its own event loop.

@@ -9,7 +9,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Environment Setup
 - Install uv package manager: `pip install uv`
 - Install dependencies: `uv pip install -e .`
-- Create `.env` file with `CANVAS_API_TOKEN` and `CANVAS_API_URL`
+- Create `.env` file. This fork defaults to Harvard session auth:
+  `CANVAS_API_URL=https://canvas.harvard.edu/api/v1`, `CANVAS_ROLE=student`,
+  plus `CANVAS_SESSION_COOKIE` or `CANVAS_CHROME_USER_DATA_DIR`.
+  `CANVAS_API_TOKEN` is optional. See [docs/harvard-session-auth.md](docs/harvard-session-auth.md).
 - Server installed as CLI command: `canvas-mcp-server`
 
 ## Commands
@@ -31,7 +34,7 @@ canvas-mcp/
 ├── docs/                 # GitHub Pages site + guides
 ├── tools/                # Tool documentation (README.md, TOOL_MANIFEST.json)
 ├── archive/              # Legacy code (git-ignored)
-└── .env                  # Configuration (CANVAS_API_TOKEN, CANVAS_API_URL)
+└── .env                  # Configuration (session cookie or optional token)
 ```
 
 ## Architecture Overview
@@ -146,7 +149,7 @@ See: [Issue #56](https://github.com/vishalsachdev/canvas-mcp/issues/56) for comp
 
 ## Canvas API Specifics
 - Base URL from `CANVAS_API_URL` environment variable
-- Authentication via Bearer token in `CANVAS_API_TOKEN`
+- Authentication via Harvard Key session (`CANVAS_SESSION_COOKIE` or Chrome profile); `CANVAS_API_TOKEN` is optional
 - Always use pagination for list endpoints
 - Course codes preferred over IDs in user-facing output
 - Handle both published and unpublished content states

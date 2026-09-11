@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Harvard Key **session auth** for Canvas REST `/api/v1`: inject a runtime
+  `CANVAS_SESSION_COOKIE` into httpx, or reuse a Chrome persistent profile via
+  Playwright same-origin `fetch`. Personal access tokens are optional.
+  See `docs/harvard-session-auth.md`.
+
 ### Changed
 
 - Migrated to FastMCP 4 and MCP SDK 2. Protocol-model attribute reads now use

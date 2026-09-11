@@ -1,16 +1,17 @@
 """Per-request credential context for HTTP transport.
 
-When the server runs in HTTP mode, each request carries its own Canvas API
-token via the X-Canvas-Token header. The Canvas API URL is pinned by server
-configuration (CANVAS_API_URL), never supplied by the client. This module
-uses Python's contextvars to thread the per-request token through the async
-call stack without modifying any tool signatures.
+When the server runs in HTTP mode, each request carries its own Canvas
+session cookie (X-Canvas-Cookie) or optional API token (X-Canvas-Token).
+The Canvas API URL is pinned by server configuration (CANVAS_API_URL),
+never supplied by the client. This module uses Python's contextvars to
+thread the per-request credentials through the async call stack without
+modifying any tool signatures.
 
 In stdio mode, the ContextVar remains unset (None), and the client falls
 back to the global .env-based configuration. To keep that fallback from
-leaking the server's own token in HTTP mode, an additional ``_http_request_active``
-marker distinguishes "HTTP request with no token" (must fail closed) from
-"stdio mode" (env fallback is intended).
+leaking the server's own session or token in HTTP mode, an additional
+``_http_request_active`` marker distinguishes "HTTP request with no
+credentials" (must fail closed) from "stdio mode" (env fallback is intended).
 """
 
 from contextvars import ContextVar
@@ -19,10 +20,15 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class RequestCredentials:
-    """Canvas API credentials for a single HTTP request."""
+    """Canvas API credentials for a single HTTP request.
+
+    ``session_cookie`` is the Harvard session path (``X-Canvas-Cookie``).
+    ``api_token`` remains an optional Bearer fallback (``X-Canvas-Token``).
+    """
 
     api_token: str
     api_url: str
+    session_cookie: str = ""
 
 
 _request_credentials: ContextVar[RequestCredentials | None] = ContextVar(

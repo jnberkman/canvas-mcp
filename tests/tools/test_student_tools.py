@@ -337,6 +337,59 @@ class TestUpcomingAssignmentsHonorRange:
         assert "✅ Submitted" in result
 
     @pytest.mark.asyncio
+    async def test_quiz_planner_item_is_included(self):
+        """Upstream has no dedicated quiz tools; planner quiz items must stay visible."""
+        soon = (datetime.now(UTC) + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = {
+            "plannable_type": "quiz",
+            "course_id": 101,
+            "plannable": {"id": 9, "title": "Week 1 Quiz", "due_at": soon},
+            "plannable_date": soon,
+            "submissions": {"submitted": False},
+        }
+
+        with patch('canvas_mcp.tools.student_tools.fetch_all_paginated_results', new_callable=AsyncMock) as mock_fetch, \
+             patch('canvas_mcp.tools.student_tools.get_course_code', new_callable=AsyncMock) as mock_course:
+            mock_fetch.return_value = [item]
+            mock_course.return_value = "TEST-101"
+
+            tool = get_student_tool_function('get_my_upcoming_assignments')
+            result = await tool(days=7)
+
+        assert "Week 1 Quiz" in result
+        assert "Not Submitted" in result
+
+    @pytest.mark.asyncio
+    async def test_todo_includes_quiz_typed_items(self):
+        """get_my_todo_items must not drop quiz rows Canvas returns."""
+        todos = [
+            {
+                "type": "quiz",
+                "course_id": 101,
+                "assignment": {
+                    "name": "Week 1 Quiz",
+                    "due_at": "2026-09-15T23:59:00Z",
+                },
+            }
+        ]
+
+        with patch(
+            "canvas_mcp.tools.student_tools.fetch_all_paginated_results",
+            new_callable=AsyncMock,
+        ) as mock_fetch, patch(
+            "canvas_mcp.tools.student_tools.get_course_code",
+            new_callable=AsyncMock,
+        ) as mock_course:
+            mock_fetch.return_value = todos
+            mock_course.return_value = "TEST-101"
+
+            tool = get_student_tool_function("get_my_todo_items")
+            result = await tool()
+
+        assert "Week 1 Quiz" in result
+        assert "Quiz" in result
+
+    @pytest.mark.asyncio
     async def test_graded_discussion_is_included_ungraded_is_not(self):
         """Graded discussions carry due_at in the planner payload; ungraded
         to-do discussions only have todo_date and must stay excluded."""

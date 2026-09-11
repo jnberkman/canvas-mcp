@@ -251,7 +251,7 @@ class TestCodeExecutionIsolation:
             # Only safe keys + Canvas credentials should be present
             for key in env:
                 assert key in _SAFE_ENV_KEYS or key in (
-                    "CANVAS_API_URL", "CANVAS_API_TOKEN"
+                    "CANVAS_API_URL", "CANVAS_API_TOKEN", "CANVAS_SESSION_COOKIE"
                 ), f"Unexpected key in env: {key}"
 
             assert "MY_CUSTOM_VAR" not in env
